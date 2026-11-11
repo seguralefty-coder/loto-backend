@@ -17,7 +17,6 @@ const wss = new WebSocket.Server({ server });
 
 const TOTAL_CARDS = 54;
 let deck = [];
-let currentCard = null;
 let isPlaying = false;
 let gameTimer = null;
 
@@ -30,53 +29,75 @@ function shuffleDeck() {
   return cards;
 }
 
+function broadcast(data) {
+  const payload = JSON.stringify(data);
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  });
+}
+
 function startGame() {
+  if (isPlaying) return;
   deck = shuffleDeck();
   isPlaying = true;
   console.log('Game started.');
+  broadcast({ type: 'GAME_STARTED' });
 
+  // Velocidad ajustada a 3.5 segundos (3500 ms) para dar tiempo a cantar y marcar
   gameTimer = setInterval(() => {
-    if (deck.length > 0) {
+    if (deck.length > 0 && isPlaying) {
       const cardId = deck.pop();
-      currentCard = { id: cardId, timestamp: Date.now() };
-
-      const payload = JSON.stringify({
+      broadcast({
         type: 'CARD_DRAWN',
         roomId: 'sala_general',
         card: { id: cardId }
       });
-
-      wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(payload);
-        }
-      });
       console.log('Card drawn: ' + cardId);
     } else {
-      console.log('Game finished.');
-      clearInterval(gameTimer);
-      isPlaying = false;
+      stopGame('DECK_EMPTY');
     }
-  }, 1900);
+  }, 3500);
+}
+
+function stopGame(reason) {
+  if (gameTimer) {
+    clearInterval(gameTimer);
+    gameTimer = null;
+  }
+  isPlaying = false;
+  console.log('Game stopped: ' + reason);
+  broadcast({ type: 'GAME_OVER', reason: reason });
 }
 
 wss.on('connection', (ws) => {
-  console.log('Player connected.');
+  console.log('Player connected. Total: ' + wss.clients.size);
 
-  if (currentCard) {
-    ws.send(JSON.stringify({
-      type: 'CARD_DRAWN',
-      roomId: 'sala_general',
-      card: { id: currentCard.id }
-    }));
-  }
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
 
-  if (!isPlaying) {
-    startGame();
-  }
+      // El juego arranca solo cuando el cliente avisa que la sala inició
+      if (data.type === 'START_MATCH') {
+        startGame();
+      }
+
+      // Se detiene inmediatamente cuando un jugador canta victoria
+      if (data.type === 'CLAIM_WIN') {
+        stopGame('WINNER_DECLARED');
+      }
+    } catch (e) {
+      console.error('Invalid message format');
+    }
+  });
 
   ws.on('close', () => {
-    console.log('Player disconnected.');
+    console.log('Player disconnected. Remaining: ' + wss.clients.size);
+    // Si todos salen de la sala, se apaga la tómbola
+    if (wss.clients.size === 0) {
+      stopGame('ROOM_EMPTY');
+    }
   });
 });
 
