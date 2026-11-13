@@ -63,7 +63,7 @@ const server = http.createServer(async (req, res) => {
 
       const tpResult = await new Promise((resolve, reject) => {
         const tpReq = https.request({
-          hostname: '://tilopay.com',
+          hostname: 'app.tilopay.com',
           path: '/api/v1/login',
           method: 'POST',
           headers: {
