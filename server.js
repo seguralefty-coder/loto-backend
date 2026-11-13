@@ -1,14 +1,13 @@
-const WebSocket = require('ws');
+  const WebSocket = require('ws');
 const http = require('http');
+const https = require('https');
 
 const PORT = process.env.PORT || 10000;
 
-// Credenciales de Tilo Pay guardadas de forma segura en Render
 const TILOPAY_API_KEY = process.env.TILOPAY_API_KEY;
 const TILOPAY_API_USER = process.env.TILOPAY_API_USER;
 const TILOPAY_API_PASSWORD = process.env.TILOPAY_API_PASSWORD;
 
-// Función auxiliar para leer el cuerpo JSON de las peticiones
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -26,26 +25,23 @@ function parseBody(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-  // Permisos CORS para que tu app APK y web puedan conectarse sin dar "Failed to fetch"
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  // Responder rápido a las verificaciones previas del navegador
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
     return;
   }
 
-  // Verificación de estado de Render
   if (req.url === '/healthz' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
     return;
   }
 
-  // Ruta oficial para iniciar sesión de pago con tarjeta en Tilo Pay SDK
+  // Ruta oficial para iniciar sesión de pago con tarjeta en Tilo Pay
   if (req.url === '/api/tilopay/create-session' && req.method === 'POST') {
     try {
       if (!TILOPAY_API_KEY || !TILOPAY_API_USER || !TILOPAY_API_PASSWORD) {
@@ -59,8 +55,6 @@ const server = http.createServer(async (req, res) => {
       const currency = data.currency || 'GTQ';
       const orderNumber = 'LOTO-' + Date.now();
 
-      // Petición HTTPS nativa hacia Tilo Pay (compatible con todas las versiones de Node)
-      const https = require('https');
       const postData = JSON.stringify({
         apiuser: TILOPAY_API_USER.trim(),
         password: TILOPAY_API_PASSWORD.trim(),
@@ -69,8 +63,8 @@ const server = http.createServer(async (req, res) => {
 
       const tpResult = await new Promise((resolve, reject) => {
         const tpReq = https.request({
-          hostname: 'app.tilopay.com',
-          path: '/api/v1/loginSdk',
+          hostname: '://tilopay.com',
+          path: '/api/v1/login',
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -117,7 +111,42 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Velocidad ajustada a 3.5 segundos (3500 ms) para dar tiempo a cantar y marcar
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Ruta no encontrada' }));
+});
+
+const wss = new WebSocket.Server({ server });
+
+const TOTAL_CARDS = 54;
+let deck = [];
+let isPlaying = false;
+let gameTimer = null;
+
+function shuffleDeck() {
+  let cards = Array.from({ length: TOTAL_CARDS }, (_, i) => i + 1);
+  for (let i = cards.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [cards[i], cards[j]] = [cards[j], cards[i]];
+  }
+  return cards;
+}
+
+function broadcast(data) {
+  const payload = JSON.stringify(data);
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  });
+}
+
+function startGame() {
+  if (isPlaying) return;
+  deck = shuffleDeck();
+  isPlaying = true;
+  console.log('Game started.');
+  broadcast({ type: 'GAME_STARTED' });
+
   gameTimer = setInterval(() => {
     if (deck.length > 0 && isPlaying) {
       const cardId = deck.pop();
@@ -150,12 +179,10 @@ wss.on('connection', (ws) => {
     try {
       const data = JSON.parse(message);
 
-      // El juego arranca solo cuando el cliente avisa que la sala inició
       if (data.type === 'START_MATCH') {
         startGame();
       }
 
-      // Se detiene inmediatamente cuando un jugador canta victoria
       if (data.type === 'CLAIM_WIN') {
         stopGame('WINNER_DECLARED');
       }
@@ -166,7 +193,6 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     console.log('Player disconnected. Remaining: ' + wss.clients.size);
-    // Si todos salen de la sala, se apaga la tómbola
     if (wss.clients.size === 0) {
       stopGame('ROOM_EMPTY');
     }
