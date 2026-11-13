@@ -59,23 +59,45 @@ const server = http.createServer(async (req, res) => {
       const currency = data.currency || 'GTQ';
       const orderNumber = 'LOTO-' + Date.now();
 
-      // Solicitar el token de SDK a Tilo Pay desde el servidor seguro
-      const tpResponse = await fetch('https://tilopay.com', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiuser: TILOPAY_API_USER,
-          password: TILOPAY_API_PASSWORD,
-          key: TILOPAY_API_KEY
-        })
+      // Petición HTTPS nativa hacia Tilo Pay (compatible con todas las versiones de Node)
+      const https = require('https');
+      const postData = JSON.stringify({
+        apiuser: TILOPAY_API_USER.trim(),
+        password: TILOPAY_API_PASSWORD.trim(),
+        key: TILOPAY_API_KEY.trim()
       });
 
-      const tpData = await tpResponse.json();
+      const tpResult = await new Promise((resolve, reject) => {
+        const tpReq = https.request({
+          hostname: 'app.tilopay.com',
+          path: '/api/v1/loginSdk',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(postData)
+          }
+        }, (tpRes) => {
+          let rawData = '';
+          tpRes.on('data', chunk => rawData += chunk);
+          tpRes.on('end', () => resolve({ status: tpRes.statusCode, body: rawData }));
+        });
+        tpReq.on('error', reject);
+        tpReq.write(postData);
+        tpReq.end();
+      });
 
-      if (!tpResponse.ok || !tpData.access_token) {
-        console.error('Error autenticando con Tilo Pay:', tpData);
+      let tpData = {};
+      try {
+        tpData = JSON.parse(tpResult.body);
+      } catch (e) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Respuesta inesperada de Tilo Pay (' + tpResult.status + '): ' + tpResult.body.slice(0, 120) }));
+        return;
+      }
+
+      if (tpResult.status !== 200 || !tpData.access_token) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'No se pudo iniciar sesión con Tilo Pay', details: tpData }));
+        res.end(JSON.stringify({ error: 'Tilo Pay rechazó el acceso: ' + (tpData.message || JSON.stringify(tpData)) }));
         return;
       }
 
@@ -83,53 +105,17 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({
         success: true,
         token: tpData.access_token,
+        key: TILOPAY_API_KEY.trim(),
         orderNumber: orderNumber,
         amount: amount,
         currency: currency
       }));
     } catch (error) {
-      console.error('Error interno en Tilo Pay:', error);
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Error interno al procesar solicitud de pago' }));
+      res.end(JSON.stringify({ error: 'Fallo de red en servidor: ' + error.message }));
     }
     return;
   }
-
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Ruta no encontrada' }));
-});
-
-const wss = new WebSocket.Server({ server });
-
-const TOTAL_CARDS = 54;
-let deck = [];
-let isPlaying = false;
-let gameTimer = null;
-
-function shuffleDeck() {
-  let cards = Array.from({ length: TOTAL_CARDS }, (_, i) => i + 1);
-  for (let i = cards.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [cards[i], cards[j]] = [cards[j], cards[i]];
-  }
-  return cards;
-}
-
-function broadcast(data) {
-  const payload = JSON.stringify(data);
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
-    }
-  });
-}
-
-function startGame() {
-  if (isPlaying) return;
-  deck = shuffleDeck();
-  isPlaying = true;
-  console.log('Game started.');
-  broadcast({ type: 'GAME_STARTED' });
 
   // Velocidad ajustada a 3.5 segundos (3500 ms) para dar tiempo a cantar y marcar
   gameTimer = setInterval(() => {
