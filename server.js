@@ -3,14 +3,100 @@ const http = require('http');
 
 const PORT = process.env.PORT || 10000;
 
-const server = http.createServer((req, res) => {
-  if (req.url === '/healthz') {
+// Credenciales de Tilo Pay guardadas de forma segura en Render
+const TILOPAY_API_KEY = process.env.TILOPAY_API_KEY;
+const TILOPAY_API_USER = process.env.TILOPAY_API_USER;
+const TILOPAY_API_PASSWORD = process.env.TILOPAY_API_PASSWORD;
+
+// Función auxiliar para leer el cuerpo JSON de las peticiones
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
+    });
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  // Permisos CORS para que tu app APK y web puedan conectarse sin dar "Failed to fetch"
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  // Responder rápido a las verificaciones previas del navegador
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  // Verificación de estado de Render
+  if (req.url === '/healthz' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
-  } else {
-    res.writeHead(404);
-    res.end();
+    return;
   }
+
+  // Ruta oficial para iniciar sesión de pago con tarjeta en Tilo Pay SDK
+  if (req.url === '/api/tilopay/create-session' && req.method === 'POST') {
+    try {
+      if (!TILOPAY_API_KEY || !TILOPAY_API_USER || !TILOPAY_API_PASSWORD) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Faltan credenciales de Tilo Pay en Render' }));
+        return;
+      }
+
+      const data = await parseBody(req);
+      const amount = Number(data.amount) || 25.00;
+      const currency = data.currency || 'GTQ';
+      const orderNumber = 'LOTO-' + Date.now();
+
+      // Solicitar el token de SDK a Tilo Pay desde el servidor seguro
+      const tpResponse = await fetch('https://tilopay.com', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiuser: TILOPAY_API_USER,
+          password: TILOPAY_API_PASSWORD,
+          key: TILOPAY_API_KEY
+        })
+      });
+
+      const tpData = await tpResponse.json();
+
+      if (!tpResponse.ok || !tpData.access_token) {
+        console.error('Error autenticando con Tilo Pay:', tpData);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No se pudo iniciar sesión con Tilo Pay', details: tpData }));
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        token: tpData.access_token,
+        orderNumber: orderNumber,
+        amount: amount,
+        currency: currency
+      }));
+    } catch (error) {
+      console.error('Error interno en Tilo Pay:', error);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Error interno al procesar solicitud de pago' }));
+    }
+    return;
+  }
+
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Ruta no encontrada' }));
 });
 
 const wss = new WebSocket.Server({ server });
@@ -112,5 +198,3 @@ setInterval(() => {
 server.listen(PORT, () => {
   console.log('Server running on port ' + PORT);
 });
-
-
